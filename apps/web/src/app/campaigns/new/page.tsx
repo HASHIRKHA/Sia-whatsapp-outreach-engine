@@ -8,7 +8,7 @@ import { Button } from '@/components/Button';
 import { useToast, ToastProvider } from '@/components/Toast';
 import { apiFetch } from '@/lib/api';
 import { spinText } from '@wa-engine/shared';
-import type { Template, ContactsPage } from '@/types/api';
+import type { Template, SmartList } from '@/types/api';
 
 const STEPS = ['Basics', 'Message', 'Contacts', 'Schedule', 'Review'];
 
@@ -65,13 +65,13 @@ function OptionCard({ active, icon, title, desc, onClick }: { active: boolean; i
     <div
       onClick={onClick}
       style={{
-        border: `1px solid ${active ? 'rgba(37,211,102,0.3)' : 'rgba(255,255,255,0.06)'}`,
+        border: `1px solid ${active ? 'rgba(212,175,55,0.35)' : 'rgba(255,255,255,0.06)'}`,
         borderRadius: 12, padding: '18px 20px', cursor: 'pointer',
-        background: active ? 'rgba(37,211,102,0.07)' : 'rgba(255,255,255,0.02)',
+        background: active ? 'rgba(212,175,55,0.07)' : 'rgba(255,255,255,0.02)',
         transition: 'all 0.15s',
       }}
     >
-      <div style={{ color: active ? '#25d366' : 'var(--text-muted)', marginBottom: 10 }}>{icon}</div>
+      <div style={{ color: active ? '#D4AF37' : 'var(--text-muted)', marginBottom: 10 }}>{icon}</div>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>{title}</div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>{desc}</div>
     </div>
@@ -93,17 +93,17 @@ function NewCampaignContent() {
   const [aiAudience, setAiAudience] = useState('');
   const [aiTone, setAiTone] = useState('Friendly');
   const [aiCount, setAiCount] = useState(10);
-  const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
+  const [smartListId, setSmartListId] = useState('');
   const [activeFrom, setActiveFrom] = useState(8);
   const [activeTo, setActiveTo] = useState(22);
   const [aiMessages, setAiMessages] = useState<string[]>([]);
   const [aiGenerating, setAiGenerating] = useState(false);
 
   const { data: templates } = useSWR<Template[]>('/templates', (url: string) => apiFetch<Template[]>(url));
-  const { data: contactsData } = useSWR<ContactsPage>('/contacts?take=200', (url: string) => apiFetch<ContactsPage>(url));
-  const contactList = contactsData?.data ?? [];
+  const { data: smartLists } = useSWR<SmartList[]>('/smart-lists', (url: string) => apiFetch<SmartList[]>(url));
 
   const selectedTemplate = templates?.find((t) => t.id === templateId);
+  const selectedSmartList = smartLists?.find((sl) => sl.id === smartListId);
 
   const handleGenerateAI = async () => {
     setAiGenerating(true);
@@ -141,10 +141,10 @@ function NewCampaignContent() {
         body: JSON.stringify({ name, mode, templateId: resolvedTemplateId, activeFrom, activeTo }),
       });
 
-      if (!asDraft && selectedContacts.length > 0) {
+      if (!asDraft && smartListId) {
         await apiFetch(`/campaigns/${campaign.id}/launch`, {
           method: 'POST',
-          body: JSON.stringify({ contactIds: selectedContacts }),
+          body: JSON.stringify({ smartListId }),
         });
         toast('Campaign launched!', 'success');
       } else {
@@ -155,7 +155,7 @@ function NewCampaignContent() {
     finally { setLoading(false); }
   };
 
-  const estimatedMinutes = selectedContacts.length * 15;
+  const estimatedMinutes = (selectedSmartList?.contactCount ?? 0) * 15;
   const estimatedHours = Math.floor(estimatedMinutes / 60);
   const estimatedMins = estimatedMinutes % 60;
 
@@ -169,11 +169,11 @@ function NewCampaignContent() {
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 <div style={{
                   width: 30, height: 30, borderRadius: '50%',
-                  background: i < step ? '#25d366' : i === step ? 'rgba(37,211,102,0.15)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${i <= step ? 'rgba(37,211,102,0.35)' : 'rgba(255,255,255,0.07)'}`,
+                  background: i < step ? '#D4AF37' : i === step ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${i <= step ? 'rgba(212,175,55,0.35)' : 'rgba(255,255,255,0.07)'}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 600,
-                  color: i < step ? '#000' : i === step ? '#25d366' : 'var(--text-muted)',
+                  color: i < step ? '#000' : i === step ? '#D4AF37' : 'var(--text-muted)',
                   flexShrink: 0,
                 }}>
                   {i < step ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg> : i + 1}
@@ -183,7 +183,7 @@ function NewCampaignContent() {
                 </div>
               </div>
               {i < STEPS.length - 1 && (
-                <div style={{ flex: 1, height: 1, background: i < step ? '#25d366' : 'rgba(255,255,255,0.06)', marginTop: 15 }} />
+                <div style={{ flex: 1, height: 1, background: i < step ? '#D4AF37' : 'rgba(255,255,255,0.06)', marginTop: 15 }} />
               )}
             </React.Fragment>
           ))}
@@ -256,7 +256,7 @@ function NewCampaignContent() {
                     </div>
                     <div style={{ flex: 1 }}>
                       <label style={labelStyle}>Count — {aiCount} messages</label>
-                      <input type="range" min={10} max={500} value={aiCount} onChange={(e) => setAiCount(Number(e.target.value))} style={{ width: '100%', marginTop: 10, accentColor: '#25d366' }} />
+                      <input type="range" min={10} max={500} value={aiCount} onChange={(e) => setAiCount(Number(e.target.value))} style={{ width: '100%', marginTop: 10, accentColor: '#D4AF37' }} />
                     </div>
                   </div>
                   <Button loading={aiGenerating} onClick={handleGenerateAI} disabled={!aiBrief}>Generate Messages</Button>
@@ -267,8 +267,8 @@ function NewCampaignContent() {
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {aiMessages.slice(0, 3).map((m, i) => (
-                          <div key={i} style={{ background: 'rgba(37,211,102,0.05)', border: '1px solid rgba(37,211,102,0.12)', borderRadius: 10, padding: '12px 14px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                            <div style={{ fontSize: 9, color: '#25d366', fontWeight: 600, letterSpacing: '1px', marginBottom: 6 }}>VARIANT {i + 1}</div>
+                          <div key={i} style={{ background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.12)', borderRadius: 10, padding: '12px 14px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                            <div style={{ fontSize: 9, color: '#D4AF37', fontWeight: 600, letterSpacing: '1px', marginBottom: 6 }}>VARIANT {i + 1}</div>
                             {m}
                           </div>
                         ))}
@@ -280,47 +280,82 @@ function NewCampaignContent() {
             </div>
           )}
 
-          {/* Step 2: Contacts */}
+          {/* Step 2: Smart List */}
           {step === 2 && (
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>Select Contacts</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedContacts.length} selected · {contactsData?.total ?? 0} total</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>Select Smart List</div>
+                {smartListId && (
+                  <button
+                    onClick={() => setSmartListId('')}
+                    style={{ fontSize: 11, color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}
+                  >
+                    Clear
+                  </button>
+                )}
               </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-                <Button size="sm" variant="outline" onClick={() => setSelectedContacts(contactList.filter((c) => c.valid).map((c) => c.id))}>
-                  Select All Valid (shown)
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setSelectedContacts([])}>Clear</Button>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.5 }}>
+                Pick a smart list — all valid contacts inside it will be included in the campaign.
               </div>
-              {(contactsData?.total ?? 0) > contactList.length && (
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
-                  Showing first 200 of {contactsData?.total} contacts. To send to all, launch from the campaign detail page → "All Contacts" tab.
+
+              {(!smartLists || smartLists.length === 0) ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)', fontSize: 13 }}>
+                  <div style={{ fontSize: 28, marginBottom: 10 }}>📋</div>
+                  No smart lists yet. Go to <strong style={{ color: 'var(--text-secondary)' }}>Contacts → Smart Lists</strong> to create one first.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
+                  {(smartLists ?? []).map((sl) => {
+                    const active = smartListId === sl.id;
+                    return (
+                      <div
+                        key={sl.id}
+                        onClick={() => setSmartListId(active ? '' : sl.id)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 14,
+                          padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
+                          border: `1px solid ${active ? 'rgba(212,175,55,0.4)' : 'rgba(255,255,255,0.06)'}`,
+                          background: active ? 'rgba(212,175,55,0.07)' : 'rgba(255,255,255,0.02)',
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        {/* radio dot */}
+                        <div style={{
+                          width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                          border: `2px solid ${active ? '#D4AF37' : 'rgba(255,255,255,0.15)'}`,
+                          background: active ? '#D4AF37' : 'transparent',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                          {active && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#0A0800' }} />}
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>{sl.name}</div>
+                          {sl.description && (
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sl.description}</div>
+                          )}
+                        </div>
+
+                        <div style={{
+                          flexShrink: 0, textAlign: 'right',
+                          background: active ? 'rgba(212,175,55,0.12)' : 'rgba(255,255,255,0.04)',
+                          border: `1px solid ${active ? 'rgba(212,175,55,0.25)' : 'rgba(255,255,255,0.06)'}`,
+                          borderRadius: 8, padding: '4px 10px',
+                        }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: active ? '#D4AF37' : 'var(--text-primary)' }}>{sl.contactCount}</div>
+                          <div style={{ fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.5px' }}>CONTACTS</div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
-              <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10 }}>
-                {contactList.map((c) => (
-                  <label
-                    key={c.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedContacts.includes(c.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) setSelectedContacts((prev) => [...prev, c.id]);
-                        else setSelectedContacts((prev) => prev.filter((id) => id !== c.id));
-                      }}
-                      style={{ accentColor: '#25d366' }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>{c.phone}</div>
-                      {c.name && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.name}</div>}
-                    </div>
-                    {!c.valid && <span style={{ fontSize: 10, color: '#ef4444', flexShrink: 0 }}>INVALID</span>}
-                  </label>
-                ))}
-              </div>
+
+              {selectedSmartList && (
+                <div style={{ marginTop: 14, padding: '10px 14px', background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.15)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                  <span style={{ color: '#D4AF37', fontWeight: 600 }}>{selectedSmartList.contactCount} contacts</span> from <span style={{ color: 'var(--text-secondary)' }}>{selectedSmartList.name}</span> will be included. Only valid contacts in this list will receive messages.
+                </div>
+              )}
             </div>
           )}
 
@@ -328,7 +363,7 @@ function NewCampaignContent() {
           {step === 3 && (
             <div>
               <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 22, color: 'var(--text-primary)' }}>Schedule</div>
-              <div style={{ background: 'rgba(37,211,102,0.05)', border: '1px solid rgba(37,211,102,0.12)', borderRadius: 10, padding: '12px 16px', marginBottom: 22, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              <div style={{ background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.12)', borderRadius: 10, padding: '12px 16px', marginBottom: 22, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                 Messages only send within the active window (server timezone). Outside these hours messages queue and resume automatically.
               </div>
               <div style={{ display: 'flex', gap: 16 }}>
@@ -342,7 +377,7 @@ function NewCampaignContent() {
                 </div>
               </div>
               <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-muted)' }}>
-                Active window: <span style={{ color: '#25d366' }}>{activeFrom}:00 – {activeTo}:00</span>
+                Active window: <span style={{ color: '#D4AF37' }}>{activeFrom}:00 – {activeTo}:00</span>
               </div>
             </div>
           )}
@@ -356,7 +391,7 @@ function NewCampaignContent() {
                   { label: 'Campaign Name', value: name || '(unnamed)' },
                   { label: 'Mode', value: mode === 'CLOUD_API' ? 'Cloud API' : 'WebSocket' },
                   { label: 'Message Source', value: sourceType === 'template' ? (selectedTemplate?.name ?? 'None selected') : `AI Generated (${aiMessages.length} messages)` },
-                  { label: 'Contacts', value: `${selectedContacts.length} selected` },
+                  { label: 'Smart List', value: selectedSmartList ? `${selectedSmartList.name} (${selectedSmartList.contactCount} contacts)` : 'None selected' },
                   { label: 'Active Hours', value: `${activeFrom}:00 – ${activeTo}:00` },
                   { label: 'Est. Duration', value: estimatedHours > 0 ? `~${estimatedHours}h ${estimatedMins}m` : `~${estimatedMins}m` },
                 ].map(({ label, value }) => (
@@ -366,9 +401,9 @@ function NewCampaignContent() {
                   </div>
                 ))}
               </div>
-              {selectedContacts.length === 0 && (
+              {!smartListId && (
                 <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, padding: '10px 14px', marginTop: 16, fontSize: 12, color: '#f59e0b' }}>
-                  No contacts selected — campaign will be saved as draft
+                  No smart list selected — campaign will be saved as draft
                 </div>
               )}
             </div>
@@ -385,13 +420,14 @@ function NewCampaignContent() {
                 disabled={
                   (step === 0 && !name) ||
                   (step === 1 && sourceType === 'ai' && aiMessages.length === 0) ||
-                  (step === 1 && sourceType === 'template' && !templateId)
+                  (step === 1 && sourceType === 'template' && !templateId) ||
+                  (step === 2 && !smartListId)
                 }
               >Next</Button>
             ) : (
               <>
                 <Button variant="outline" loading={loading} onClick={() => handleLaunch(true)}>Save as Draft</Button>
-                <Button loading={loading} onClick={() => handleLaunch(false)} disabled={selectedContacts.length === 0}>Launch Now</Button>
+                <Button loading={loading} onClick={() => handleLaunch(false)} disabled={!smartListId}>Launch Now</Button>
               </>
             )}
           </div>

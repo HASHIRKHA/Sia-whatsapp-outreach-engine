@@ -44,8 +44,9 @@ interface SmartListsSidebarProps {
   onSelect: (id: string | null) => void;
   onDelete: (id: string) => Promise<void>;
   onNewList: () => void;
+  onImportToList: (id: string) => void;
 }
-function SmartListsSidebar({ lists, activeId, totalContacts, onSelect, onDelete, onNewList }: SmartListsSidebarProps) {
+function SmartListsSidebar({ lists, activeId, totalContacts, onSelect, onDelete, onNewList, onImportToList }: SmartListsSidebarProps) {
   const allActive = activeId === null;
 
   const sidebarItem = (active: boolean): React.CSSProperties => ({
@@ -109,6 +110,13 @@ function SmartListsSidebar({ lists, activeId, totalContacts, onSelect, onDelete,
             <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 10, flexShrink: 0 }}>
               {list.contactCount}
             </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onImportToList(list.id); }}
+              title="Import Excel to this list"
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 4px', display: 'flex', alignItems: 'center', opacity: 0.7, flexShrink: 0 }}
+            >
+              <IcUpload />
+            </button>
             <button
               onClick={(e) => { e.stopPropagation(); void onDelete(list.id); }}
               title="Delete list"
@@ -498,7 +506,7 @@ function parseExcel(buffer: ArrayBuffer): ParsedContact[] {
   }).filter((c) => c.phone.length > 0);
 }
 
-function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function ImportModal({ onClose, onDone, smartListId, listName }: { onClose: () => void; onDone: () => void; smartListId?: string; listName?: string }) {
   const [csvText, setCsvText] = useState('');
   const [parsed, setParsed] = useState<ParsedContact[] | null>(null);
   const [fileName, setFileName] = useState('');
@@ -548,7 +556,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         setProgress(`Importing ${done} / ${total}…`);
         const r = await apiFetch<{ imported: number; skipped: number }>('/contacts/import', {
           method: 'POST',
-          body: JSON.stringify({ contacts: slice }),
+          body: JSON.stringify({ contacts: slice, ...(smartListId ? { smartListId } : {}) }),
         });
         totalImported += r.imported;
         totalSkipped += r.skipped;
@@ -565,7 +573,12 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const hasData = parsed !== null || csvText.trim().length > 0;
 
   return (
-    <Modal open onClose={onClose} title="Import Contacts" width={580}>
+    <Modal open onClose={onClose} title={listName ? `Import to "${listName}"` : 'Import Contacts'} width={580}>
+      {listName && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, padding: '8px 12px', background: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.15)', borderRadius: 8 }}>
+          Contacts will be imported and automatically added to <span style={{ color: '#D4AF37', fontWeight: 600 }}>{listName}</span>.
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
           {fileName
@@ -637,6 +650,7 @@ function ContactsContent() {
   const [editContact, setEditContact] = useState<Contact | null>(null);
   const [notesContact, setNotesContact] = useState<Contact | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [importSmartListId, setImportSmartListId] = useState<string | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [saveListOpen, setSaveListOpen] = useState(false);
   const [assignListOpen, setAssignListOpen] = useState(false);
@@ -819,7 +833,7 @@ function ContactsContent() {
       {/* Top bar */}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginBottom: 20 }}>
         <Button variant="outline" loading={validateLoading} onClick={handleValidate}>Validate All</Button>
-        <Button variant="outline" onClick={() => setImportOpen(true)}>Import CSV</Button>
+        <Button variant="outline" onClick={() => { setImportSmartListId(null); setImportOpen(true); }}>Import Excel / CSV</Button>
         <Button onClick={() => setAddOpen(true)}>+ Add Contact</Button>
       </div>
 
@@ -835,6 +849,7 @@ function ContactsContent() {
             onSelect={(id) => { setActiveSmartListId(id); setSelected(new Set()); }}
             onDelete={handleDeleteList}
             onNewList={() => setSaveListOpen(true)}
+            onImportToList={(id) => { setImportSmartListId(id); setImportOpen(true); }}
           />
         </div>
 
@@ -982,7 +997,12 @@ function ContactsContent() {
       {addOpen && <ContactForm title="Add Contact" onSave={handleAddSave} onClose={() => setAddOpen(false)} loading={formLoading} />}
       {editContact && <ContactForm title="Edit Contact" initial={editContact} onSave={handleEditSave} onClose={() => setEditContact(null)} loading={formLoading} />}
       {notesContact && <NotesModal contact={notesContact} onClose={() => setNotesContact(null)} onSaved={() => mutate()} />}
-      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onDone={() => mutate()} />}
+      {importOpen && <ImportModal
+        onClose={() => { setImportOpen(false); setImportSmartListId(null); }}
+        onDone={() => { mutate(); mutateLists(); }}
+        smartListId={importSmartListId ?? undefined}
+        listName={importSmartListId ? (smartLists.find((l) => l.id === importSmartListId)?.name) : undefined}
+      />}
       {scheduleOpen && <ScheduleModal contactIds={[...selected]} onClose={() => setScheduleOpen(false)} onDone={() => setSelected(new Set())} />}
       {saveListOpen && (
         <SaveListModal

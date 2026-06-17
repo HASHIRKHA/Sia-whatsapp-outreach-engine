@@ -104,9 +104,19 @@ export class ContactsService {
       }),
     );
 
-    const imported = results.filter((r) => r.status === 'fulfilled').length;
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Contact> => r.status === 'fulfilled',
+    );
     const skipped = results.filter((r) => r.status === 'rejected').length;
-    return { imported, skipped };
+
+    if (dto.smartListId && fulfilled.length > 0) {
+      await this.prisma.smartListContact.createMany({
+        data: fulfilled.map((r) => ({ smartListId: dto.smartListId!, contactId: r.value.id })),
+        skipDuplicates: true,
+      });
+    }
+
+    return { imported: fulfilled.length, skipped };
   }
 
   async listContacts(params?: {

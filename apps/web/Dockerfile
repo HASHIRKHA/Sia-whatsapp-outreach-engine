@@ -18,6 +18,7 @@ ENV NODE_ENV=production
 # NEXT_PUBLIC_* vars are baked into the JS bundle at build time — must be passed as build args.
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_OUTPUT=standalone
 
 WORKDIR /app
 COPY --from=deps /app .

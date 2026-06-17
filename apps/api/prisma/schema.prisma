@@ -1,0 +1,192 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum SessionMode {
+  CLOUD_API
+  BAILEYS
+}
+
+enum SessionStatus {
+  OFFLINE
+  CONNECTING
+  ONLINE
+  BANNED
+}
+
+enum CampaignStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  DONE
+}
+
+enum MsgStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  REPLIED
+  FAILED
+}
+
+enum LeadTemp {
+  HOT
+  WARM
+  COLD
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model Session {
+  id          String        @id @default(cuid())
+  label       String
+  mode        SessionMode
+  phoneNumber String?
+  status      SessionStatus @default(OFFLINE)
+  authState   Json? // encrypted Baileys creds
+  cloudApi    Json? // phoneNumberId, wabaId, token ref
+  fingerprint Json? // assigned device profile (Layer 3)
+  proxyId     String?
+  warmupDay   Int           @default(0)
+  dailySent   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  messages    CampaignMessage[]
+}
+
+model Contact {
+  id         String             @id @default(cuid())
+  phone      String
+  name       String?
+  city       String?
+  interest   String?
+  notes      String?
+  leadTemp   LeadTemp           @default(COLD)
+  vars       Json?
+  tags       String[]
+  valid      Boolean            @default(true)
+  createdAt  DateTime           @default(now())
+  messages   CampaignMessage[]
+  replies    Reply[]
+  smartLists SmartListContact[]
+
+  @@unique([phone])
+}
+
+model SmartList {
+  id          String             @id @default(cuid())
+  name        String
+  description String?
+  contacts    SmartListContact[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model SmartListContact {
+  smartListId String
+  contactId   String
+  smartList   SmartList @relation(fields: [smartListId], references: [id], onDelete: Cascade)
+  contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@id([smartListId, contactId])
+  @@index([smartListId])
+  @@index([contactId])
+}
+
+model Template {
+  id        String   @id @default(cuid())
+  name      String
+  body      String // spin syntax: {Hi|Hello} {name}
+  mediaUrl  String?
+  category  String? // marketing | utility | auth | service
+  createdAt DateTime @default(now())
+}
+
+model Campaign {
+  id         String         @id @default(cuid())
+  name       String
+  mode       SessionMode
+  templateId String?
+  status     CampaignStatus @default(DRAFT)
+  activeFrom Int            @default(8) // active-hours window (local)
+  activeTo   Int            @default(22)
+  createdAt  DateTime       @default(now())
+  messages   CampaignMessage[]
+  replies    Reply[]
+}
+
+model CampaignMessage {
+  id           String    @id @default(cuid())
+  campaignId   String
+  contactId    String
+  sessionId    String?
+  wamid        String?   // WhatsApp message ID returned by Cloud API; used for webhook status correlation
+  renderedText String // final spun + personalized text
+  status       MsgStatus @default(QUEUED)
+  sentAt       DateTime?
+  campaign     Campaign  @relation(fields: [campaignId], references: [id])
+  contact      Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  session      Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([wamid])
+  @@index([contactId])
+  @@index([sentAt])
+  @@index([sessionId])
+}
+
+model Reply {
+  id         String   @id @default(cuid())
+  contactId  String
+  campaignId String?
+  text       String
+  sentiment  String? // HOT|WARM|COLD|NEGATIVE (AI)
+  intent     String? // BUYING|QUESTION|OBJECTION|OPT_OUT
+  score      Float?
+  handled    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  contact    Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([contactId])
+  @@index([sentiment])
+  @@index([handled])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model Proxy {
+  id        String    @id @default(cuid())
+  host      String
+  port      Int
+  protocol  String    @default("http") // http | https | socks5
+  username  String?
+  password  String?
+  country   String?
+  inUse     Boolean   @default(false)
+  lastRotat DateTime?
+}
+
+model AnalyticsEvent {
+  id         String   @id @default(cuid())
+  type       String // SENT|DELIVERED|READ|REPLIED|FAILED|BLOCKED
+  campaignId String?
+  sessionId  String?
+  createdAt  DateTime @default(now())
+}

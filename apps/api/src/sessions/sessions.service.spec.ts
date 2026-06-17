@@ -1,0 +1,277 @@
+import { Test, type TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { SessionMode, SessionStatus } from '@prisma/client';
+import { SessionsService } from './sessions.service';
+import { SessionsGateway } from './sessions.gateway';
+import { PrismaService } from '../common/prisma/prisma.service';
+import { FingerprintService } from '../antiban/fingerprint.service';
+import { ProxyService } from '../antiban/proxy.service';
+import { ContactsService } from '../contacts/contacts.service';
+
+import makeWASocket from '@whiskeysockets/baileys';
+
+// Mock Baileys to prevent real WebSocket connections
+jest.mock('@whiskeysockets/baileys', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({
+    ev: { on: jest.fn() },
+    user: { id: '15551234567:0@s.whatsapp.net' },
+    logout: jest.fn().mockResolvedValue(undefined),
+    requestPairingCode: jest.fn().mockResolvedValue('ABCD-1234'),
+  }),
+  fetchLatestBaileysVersion: jest.fn().mockResolvedValue({ version: [2, 3000, 0], isLatest: true }),
+  DisconnectReason: { loggedOut: 401 },
+  Browsers: { macOS: jest.fn().mockReturnValue(['Mac OS X', 'Safari', '16.4']) },
+}));
+
+// Stub build-fetch-agent so we can assert on it without real proxy libraries
+jest.mock('./baileys/build-fetch-agent', () => ({
+  buildFetchAgent: jest.fn(),
+}));
+
+import { buildFetchAgent } from './baileys/build-fetch-agent';
+
+jest.mock('./baileys/db-auth-state', () => ({
+  makeDbAuthState: jest.fn().mockResolvedValue({
+    state: { creds: {}, keys: { get: jest.fn(), set: jest.fn() } },
+    saveCreds: jest.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+const mockSession = {
+  id: 'sess-1',
+  label: 'Test',
+  mode: SessionMode.BAILEYS,
+  phoneNumber: null,
+  status: SessionStatus.OFFLINE,
+  authState: null,
+  cloudApi: null,
+  fingerprint: null,
+  proxyId: null,
+  warmupDay: 0,
+  dailySent: 0,
+  createdAt: new Date(),
+  messages: [],
+};
+
+const mockFingerprint = {
+  assignFingerprint: jest.fn().mockResolvedValue({
+    userAgent: 'WhatsApp/2.24.6.77 A',
+    deviceModel: 'Pixel 7',
+    osVersion: 'Android 13',
+    screenWidth: 1080,
+    screenHeight: 2400,
+  }),
+  getFingerprint: jest.fn().mockResolvedValue(undefined),
+  rotateFingerprints: jest.fn().mockResolvedValue(undefined),
+};
+
+const mockProxy = {
+  assignProxy: jest.fn().mockResolvedValue(null), // no proxy by default
+  releaseProxy: jest.fn().mockResolvedValue(undefined),
+  rotateStalledProxies: jest.fn().mockResolvedValue(undefined),
+};
+
+describe('SessionsService', () => {
+  let service: SessionsService;
+  let prisma: jest.Mocked<PrismaService>;
+  let gateway: jest.Mocked<SessionsGateway>;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+
+    const mockPrisma = {
+      session: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(mockSession),
+        findUniqueOrThrow: jest.fn(),
+        update: jest.fn().mockResolvedValue(mockSession),
+        delete: jest.fn().mockResolvedValue(mockSession),
+      },
+    };
+    const mockGateway = {
+      emitQr: jest.fn(),
+      emitStatus: jest.fn(),
+    };
+    const mockConfig = {
+      getOrThrow: jest.fn().mockReturnValue('test-session-encryption-key'),
+      get: jest.fn().mockReturnValue(undefined), // DRY_RUN / ACTIVE_HOURS_TIMEZONE etc.
+    };
+    const mockContactsService = {
+      upsertFromWhatsApp: jest.fn().mockResolvedValue({ imported: 0 }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SessionsService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SessionsGateway, useValue: mockGateway },
+        { provide: FingerprintService, useValue: mockFingerprint },
+        { provide: ProxyService, useValue: mockProxy },
+        { provide: ContactsService, useValue: mockContactsService },
+        { provide: ConfigService, useValue: mockConfig },
+      ],
+    }).compile();
+
+    service = module.get<SessionsService>(SessionsService);
+    prisma = module.get(PrismaService);
+    gateway = module.get(SessionsGateway);
+  });
+
+  describe('onModuleInit', () => {
+    it('reconnects sessions that were ONLINE at shutdown', async () => {
+      const onlineSession = { ...mockSession, status: SessionStatus.ONLINE, phoneNumber: '+15551234567' };
+      (prisma.session.findMany as jest.Mock).mockResolvedValue([onlineSession]);
+
+      await service.onModuleInit();
+
+      expect(prisma.session.findMany).toHaveBeenCalledWith({
+        where: {
+          mode: SessionMode.BAILEYS,
+          status: { in: [SessionStatus.ONLINE, SessionStatus.CONNECTING] },
+        },
+      });
+      expect(prisma.session.update).toHaveBeenCalledWith({
+        where: { id: onlineSession.id },
+        data: { status: SessionStatus.CONNECTING },
+      });
+    });
+
+    it('does nothing when no sessions need reconnect', async () => {
+      (prisma.session.findMany as jest.Mock).mockResolvedValue([]);
+      await service.onModuleInit();
+      expect(prisma.session.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createSession', () => {
+    it('creates a session via Prisma', async () => {
+      const dto = { label: 'My Phone', mode: 'BAILEYS' as const };
+      (prisma.session.create as jest.Mock).mockResolvedValue({ ...mockSession, label: dto.label });
+
+      const result = await service.createSession(dto);
+
+      expect(prisma.session.create).toHaveBeenCalledWith({
+        data: { label: 'My Phone', mode: 'BAILEYS', phoneNumber: undefined },
+      });
+      expect(result.label).toBe('My Phone');
+    });
+
+    it('passes phoneNumber when provided and auto-sets ONLINE for CLOUD_API', async () => {
+      const dto = { label: 'Work', mode: 'CLOUD_API' as const, phoneNumber: '+15551234567' };
+      (prisma.session.create as jest.Mock).mockResolvedValue(mockSession);
+
+      await service.createSession(dto);
+
+      expect(prisma.session.create).toHaveBeenCalledWith({
+        data: {
+          label: 'Work',
+          mode: 'CLOUD_API',
+          phoneNumber: '+15551234567',
+          status: SessionStatus.ONLINE,
+        },
+      });
+    });
+  });
+
+  describe('listSessions', () => {
+    it('returns sessions ordered by createdAt desc', async () => {
+      (prisma.session.findMany as jest.Mock).mockResolvedValue([mockSession]);
+
+      const result = await service.listSessions();
+
+      expect(prisma.session.findMany).toHaveBeenCalledWith({ orderBy: { createdAt: 'desc' } });
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('getHealth', () => {
+    it('returns status and phoneNumber', async () => {
+      const session = { ...mockSession, status: SessionStatus.ONLINE, phoneNumber: '+15551234567' };
+      (prisma.session.findUniqueOrThrow as jest.Mock).mockResolvedValue(session);
+
+      const result = await service.getHealth('sess-1');
+
+      expect(result).toEqual({ status: SessionStatus.ONLINE, phoneNumber: '+15551234567' });
+    });
+
+    it('returns null phoneNumber when not set', async () => {
+      (prisma.session.findUniqueOrThrow as jest.Mock).mockResolvedValue(mockSession);
+
+      const result = await service.getHealth('sess-1');
+
+      expect(result.phoneNumber).toBeNull();
+    });
+  });
+
+  describe('deleteSession', () => {
+    it('releases proxy then deletes the session from Prisma', async () => {
+      (prisma.session.delete as jest.Mock).mockResolvedValue(mockSession);
+
+      await service.deleteSession('sess-1');
+
+      expect(mockProxy.releaseProxy).toHaveBeenCalledWith('sess-1');
+      expect(prisma.session.delete).toHaveBeenCalledWith({ where: { id: 'sess-1' } });
+    });
+
+    it('decrements socket count when active socket exists', async () => {
+      expect(service.getSocketCount()).toBe(0);
+      await service.deleteSession('nonexistent');
+      expect(service.getSocketCount()).toBe(0);
+    });
+  });
+
+  describe('onModuleDestroy', () => {
+    it('does not throw when sockets map is empty', async () => {
+      await expect(service.onModuleDestroy()).resolves.not.toThrow();
+    });
+  });
+
+  // ── Proxy fetch-agent injection ──────────────────────────────────────────────
+
+  describe('startSocket (proxy integration)', () => {
+    it('passes fetchAgent to makeWASocket when proxy is assigned', async () => {
+      const fakeAgent = { fake: 'agent' };
+      (buildFetchAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+      const proxyConfig = {
+        host: '10.0.0.1',
+        port: 1080,
+        protocol: 'socks5' as const,
+      };
+      mockProxy.assignProxy.mockResolvedValue(proxyConfig);
+
+      const onlineSession = { ...mockSession, status: SessionStatus.ONLINE, phoneNumber: '+15551234567' };
+      (prisma.session.findMany as jest.Mock).mockResolvedValue([onlineSession]);
+
+      await service.onModuleInit();
+      // Allow startSocket microtasks to settle
+      await new Promise<void>((r) => setTimeout(r, 10));
+
+      expect(buildFetchAgent).toHaveBeenCalledWith(proxyConfig);
+      const makeWASocketMock = makeWASocket as jest.Mock;
+      const callArgs = makeWASocketMock.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(callArgs?.fetchAgent).toBe(fakeAgent);
+    });
+
+    it('does not set fetchAgent when no proxy is assigned', async () => {
+      (buildFetchAgent as jest.Mock).mockReturnValue(undefined);
+      mockProxy.assignProxy.mockResolvedValue(null);
+
+      const onlineSession = { ...mockSession, status: SessionStatus.ONLINE, phoneNumber: '+15551234567' };
+      (prisma.session.findMany as jest.Mock).mockResolvedValue([onlineSession]);
+
+      await service.onModuleInit();
+      await new Promise<void>((r) => setTimeout(r, 10));
+
+      const makeWASocketMock = makeWASocket as jest.Mock;
+      const callArgs = makeWASocketMock.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(callArgs?.fetchAgent).toBeUndefined();
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+});

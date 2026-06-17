@@ -1,0 +1,58 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+.next/
+out/
+
+# environment
+.env
+.env.local
+.env.*.local
+
+# Prisma
+prisma/generated/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker volumes (if mounted locally)
+postgres_data/
+redis_data/
+dump.rdb
+
+# Claude Code local settings
+.claude/
+
+# Project spec / session / internal docs (local only)
+CLAUDE.md
+CLAUDE\ (1).md
+CLAUDE*.md
+PROGRESS.md
+BUILD_SPEC.md
+CLIENT_HANDOVER_REPORT.md
+*.pdf
+client-report.html
+
+# Runtime logs
+api.log
+api-build.log
+api-err.log
+api-node.log
+api-restart.log
+web.log
+web-err.log

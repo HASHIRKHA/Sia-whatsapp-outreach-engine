@@ -1,0 +1,206 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, IsBoolean, IsNumber } from 'class-validator';
+import { PrismaService } from '../common/prisma/prisma.service';
+import { SettingsService, type EngineSettings, type AiSettings } from './settings.service';
+import { BAILEYS_QUEUE, CLOUD_API_QUEUE, DLQ_QUEUE } from '../queue/queue.constants';
+import type { Proxy } from '@prisma/client';
+
+class CreateProxyDto {
+  @IsString()
+  @IsNotEmpty()
+  host!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  port!: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['http', 'https', 'socks5', 'socks4'])
+  protocol?: string;
+
+  @IsOptional()
+  @IsString()
+  username?: string;
+
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+}
+
+class PatchEngineDto {
+  @IsOptional()
+  @IsNumber()
+  meanMs?: number;
+
+  @IsOptional()
+  @IsNumber()
+  stdDevMs?: number;
+
+  @IsOptional()
+  @IsNumber()
+  floorMs?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ceilingMs?: number;
+
+  @IsOptional()
+  @IsNumber()
+  typingMs?: number;
+
+  @IsOptional()
+  @IsNumber()
+  dailyLimit?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
+class PatchAiDto {
+  @IsOptional()
+  @IsString()
+  provider?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  autoReply?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  sentiment?: boolean;
+}
+
+@Controller('settings')
+export class SettingsController {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+    @InjectQueue(BAILEYS_QUEUE) private readonly baileysQ: Queue,
+    @InjectQueue(CLOUD_API_QUEUE) private readonly cloudApiQ: Queue,
+    @InjectQueue(DLQ_QUEUE) private readonly dlqQ: Queue,
+  ) {}
+
+  /* ── Dry-run status (kept for backwards compatibility) ─────── */
+  @Get('dry-run')
+  dryRun(): { dryRun: boolean } {
+    const engine = this.settings.getEngineSettings();
+    return { dryRun: engine.dryRun };
+  }
+
+  /* ── Engine / delay settings ────────────────────────────────── */
+  @Get('engine')
+  getEngine(): EngineSettings {
+    return this.settings.getEngineSettings();
+  }
+
+  @Patch('antiban')
+  async patchEngine(@Body() dto: PatchEngineDto): Promise<EngineSettings> {
+    const pairs: [string, string][] = [];
+    if (dto.meanMs !== undefined) pairs.push(['DELAY_MEAN_MS', String(dto.meanMs)]);
+    if (dto.stdDevMs !== undefined) pairs.push(['DELAY_STD_DEV_MS', String(dto.stdDevMs)]);
+    if (dto.floorMs !== undefined) pairs.push(['DELAY_FLOOR_MS', String(dto.floorMs)]);
+    if (dto.ceilingMs !== undefined) pairs.push(['DELAY_CEILING_MS', String(dto.ceilingMs)]);
+    if (dto.typingMs !== undefined) pairs.push(['TYPING_SIMULATION_MS', String(dto.typingMs)]);
+    if (dto.dailyLimit !== undefined) pairs.push(['DAILY_SEND_LIMIT', String(dto.dailyLimit)]);
+    if (dto.dryRun !== undefined) pairs.push(['DRY_RUN', dto.dryRun ? 'true' : 'false']);
+    await Promise.all(pairs.map(([k, v]) => this.settings.set(k, v)));
+    return this.settings.getEngineSettings();
+  }
+
+  /* ── Warmup schedule (read-only — hardcoded by design) ──────── */
+  @Get('warmup')
+  getWarmup() {
+    return {
+      schedule: [
+        { fromDay: 0, toDay: 2, dailyCap: 10 },
+        { fromDay: 3, toDay: 5, dailyCap: 25 },
+        { fromDay: 6, toDay: 9, dailyCap: 50 },
+        { fromDay: 10, toDay: 13, dailyCap: 100 },
+        { fromDay: 14, toDay: 20, dailyCap: 150 },
+        { fromDay: 21, toDay: null, dailyCap: this.settings.getEngineSettings().dailyLimit },
+      ],
+      note: 'Warmup schedule is fixed for optimal anti-ban protection. Day 21+ uses DAILY_SEND_LIMIT.',
+    };
+  }
+
+  /* ── AI Brain settings ───────────────────────────────────────── */
+  @Get('ai-provider')
+  getAi(): AiSettings {
+    return this.settings.getAiSettings();
+  }
+
+  @Patch('ai')
+  async patchAi(@Body() dto: PatchAiDto): Promise<AiSettings> {
+    const pairs: [string, string][] = [];
+    if (dto.provider !== undefined) pairs.push(['AI_PROVIDER', dto.provider]);
+    if (dto.model !== undefined) pairs.push(['AI_MODEL', dto.model]);
+    if (dto.autoReply !== undefined) pairs.push(['AI_AUTO_REPLY', dto.autoReply ? 'true' : 'false']);
+    if (dto.sentiment !== undefined) pairs.push(['AI_SENTIMENT', dto.sentiment ? 'true' : 'false']);
+    await Promise.all(pairs.map(([k, v]) => this.settings.set(k, v)));
+    return this.settings.getAiSettings();
+  }
+
+  /* ── Queue purge ─────────────────────────────────────────────── */
+  @Post('queue/purge')
+  @HttpCode(200)
+  async purgeQueues(): Promise<{ purged: boolean; message: string }> {
+    await Promise.all([
+      this.baileysQ.obliterate({ force: true }),
+      this.cloudApiQ.obliterate({ force: true }),
+      this.dlqQ.obliterate({ force: true }),
+    ]);
+    return { purged: true, message: 'All queued messages removed from Baileys, Cloud API, and DLQ queues.' };
+  }
+
+  /* ── Proxy CRUD ──────────────────────────────────────────────── */
+  @Get('proxies')
+  listProxies(): Promise<Proxy[]> {
+    return this.prisma.proxy.findMany({ orderBy: { id: 'asc' } });
+  }
+
+  @Post('proxies')
+  createProxy(@Body() dto: CreateProxyDto): Promise<Proxy> {
+    return this.prisma.proxy.create({
+      data: {
+        host: dto.host,
+        port: dto.port,
+        protocol: dto.protocol ?? 'http',
+        username: dto.username,
+        password: dto.password,
+        country: dto.country,
+      },
+    });
+  }
+
+  @Delete('proxies/:id')
+  @HttpCode(204)
+  async deleteProxy(@Param('id') id: string): Promise<void> {
+    await this.prisma.session.updateMany({
+      where: { proxyId: id },
+      data: { proxyId: null },
+    });
+    await this.prisma.proxy.delete({ where: { id } });
+  }
+}

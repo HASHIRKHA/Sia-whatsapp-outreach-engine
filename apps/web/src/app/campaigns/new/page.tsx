@@ -1,0 +1,410 @@
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import useSWR from 'swr';
+import { DashLayout } from '@/components/DashLayout';
+import { Button } from '@/components/Button';
+import { useToast, ToastProvider } from '@/components/Toast';
+import { apiFetch } from '@/lib/api';
+import { spinText } from '@wa-engine/shared';
+import type { Template, ContactsPage } from '@/types/api';
+
+const STEPS = ['Basics', 'Message', 'Contacts', 'Schedule', 'Review'];
+
+/* ── SVG icons ─────────────────────────────────────────────── */
+const IcCloud = () => (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+  </svg>
+);
+const IcWifi = () => (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/>
+  </svg>
+);
+const IcFile = () => (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+  </svg>
+);
+const IcBrain = () => (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2a5 5 0 0 0-4.9 6A5 5 0 0 0 4 13a5 5 0 0 0 3.1 4.6A3.5 3.5 0 0 0 10.5 22h3a3.5 3.5 0 0 0 3.4-4.4A5 5 0 0 0 20 13a5 5 0 0 0-3.1-5A5 5 0 0 0 12 2z"/>
+  </svg>
+);
+
+/* ── Shared styles ─────────────────────────────────────────── */
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  background: 'rgba(255,255,255,0.04)',
+  border: '1px solid rgba(255,255,255,0.08)',
+  borderRadius: 8,
+  padding: '10px 14px',
+  color: 'var(--text-primary)',
+  fontSize: 13,
+  outline: 'none',
+  fontFamily: 'inherit',
+};
+const labelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: 11,
+  fontWeight: 500,
+  color: 'var(--text-muted)',
+  marginBottom: 6,
+  letterSpacing: '0.8px',
+  textTransform: 'uppercase',
+};
+
+/* ── Option card ────────────────────────────────────────────── */
+function OptionCard({ active, icon, title, desc, onClick }: { active: boolean; icon: React.ReactNode; title: string; desc: string; onClick: () => void }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        border: `1px solid ${active ? 'rgba(37,211,102,0.3)' : 'rgba(255,255,255,0.06)'}`,
+        borderRadius: 12, padding: '18px 20px', cursor: 'pointer',
+        background: active ? 'rgba(37,211,102,0.07)' : 'rgba(255,255,255,0.02)',
+        transition: 'all 0.15s',
+      }}
+    >
+      <div style={{ color: active ? '#25d366' : 'var(--text-muted)', marginBottom: 10 }}>{icon}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>{title}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>{desc}</div>
+    </div>
+  );
+}
+
+/* ── Main content ───────────────────────────────────────────── */
+function NewCampaignContent() {
+  const router = useRouter();
+  const { toast } = useToast();
+  const [step, setStep] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const [name, setName] = useState('');
+  const [mode, setMode] = useState<'CLOUD_API' | 'BAILEYS'>('BAILEYS');
+  const [sourceType, setSourceType] = useState<'template' | 'ai'>('template');
+  const [templateId, setTemplateId] = useState('');
+  const [aiBrief, setAiBrief] = useState('');
+  const [aiAudience, setAiAudience] = useState('');
+  const [aiTone, setAiTone] = useState('Friendly');
+  const [aiCount, setAiCount] = useState(10);
+  const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
+  const [activeFrom, setActiveFrom] = useState(8);
+  const [activeTo, setActiveTo] = useState(22);
+  const [aiMessages, setAiMessages] = useState<string[]>([]);
+  const [aiGenerating, setAiGenerating] = useState(false);
+
+  const { data: templates } = useSWR<Template[]>('/templates', (url: string) => apiFetch<Template[]>(url));
+  const { data: contactsData } = useSWR<ContactsPage>('/contacts?take=200', (url: string) => apiFetch<ContactsPage>(url));
+  const contactList = contactsData?.data ?? [];
+
+  const selectedTemplate = templates?.find((t) => t.id === templateId);
+
+  const handleGenerateAI = async () => {
+    setAiGenerating(true);
+    try {
+      const result = await apiFetch<{ messages: string[] }>('/ai/generate-templates', {
+        method: 'POST',
+        body: JSON.stringify({ brief: aiBrief, audience: aiAudience, tone: aiTone, count: aiCount }),
+      });
+      setAiMessages(result.messages ?? []);
+      toast(`Generated ${result.messages?.length ?? 0} messages`, 'success');
+    } catch (err) { toast(String(err), 'error'); }
+    finally { setAiGenerating(false); }
+  };
+
+  const handleLaunch = async (asDraft = false) => {
+    setLoading(true);
+    try {
+      let resolvedTemplateId: string | undefined = sourceType === 'template' ? templateId || undefined : undefined;
+
+      // AI brief mode: always save generated messages as a spin-syntax template — even
+      // for drafts — so the content is preserved and can be launched later.
+      if (sourceType === 'ai' && aiMessages.length > 0) {
+        const spinBody = aiMessages.length === 1
+          ? aiMessages[0]!
+          : `{${aiMessages.join('|')}}`;
+        const tpl = await apiFetch<{ id: string }>('/templates', {
+          method: 'POST',
+          body: JSON.stringify({ name: `AI — ${name}`, body: spinBody }),
+        });
+        resolvedTemplateId = tpl.id;
+      }
+
+      const campaign = await apiFetch<{ id: string }>('/campaigns', {
+        method: 'POST',
+        body: JSON.stringify({ name, mode, templateId: resolvedTemplateId, activeFrom, activeTo }),
+      });
+
+      if (!asDraft && selectedContacts.length > 0) {
+        await apiFetch(`/campaigns/${campaign.id}/launch`, {
+          method: 'POST',
+          body: JSON.stringify({ contactIds: selectedContacts }),
+        });
+        toast('Campaign launched!', 'success');
+      } else {
+        toast('Campaign saved as draft', 'success');
+      }
+      router.push(`/campaigns/${campaign.id}`);
+    } catch (err) { toast(String(err), 'error'); }
+    finally { setLoading(false); }
+  };
+
+  const estimatedMinutes = selectedContacts.length * 15;
+  const estimatedHours = Math.floor(estimatedMinutes / 60);
+  const estimatedMins = estimatedMinutes % 60;
+
+  return (
+    <DashLayout title="New Campaign">
+      <div style={{ maxWidth: 700, margin: '0 auto' }}>
+        {/* Step indicator */}
+        <div style={{ display: 'flex', gap: 0, marginBottom: 28, alignItems: 'flex-start' }}>
+          {STEPS.map((s, i) => (
+            <React.Fragment key={s}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                <div style={{
+                  width: 30, height: 30, borderRadius: '50%',
+                  background: i < step ? '#25d366' : i === step ? 'rgba(37,211,102,0.15)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${i <= step ? 'rgba(37,211,102,0.35)' : 'rgba(255,255,255,0.07)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 11, fontWeight: 600,
+                  color: i < step ? '#000' : i === step ? '#25d366' : 'var(--text-muted)',
+                  flexShrink: 0,
+                }}>
+                  {i < step ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg> : i + 1}
+                </div>
+                <div style={{ fontSize: 10, color: i === step ? 'var(--text-primary)' : 'var(--text-muted)', textAlign: 'center', fontWeight: i === step ? 500 : 400 }}>
+                  {s}
+                </div>
+              </div>
+              {i < STEPS.length - 1 && (
+                <div style={{ flex: 1, height: 1, background: i < step ? '#25d366' : 'rgba(255,255,255,0.06)', marginTop: 15 }} />
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* Step content */}
+        <div className="glass" style={{ borderRadius: 14, padding: '24px 26px', marginBottom: 16 }}>
+
+          {/* Step 0: Basics */}
+          {step === 0 && (
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 22, color: 'var(--text-primary)' }}>Campaign Basics</div>
+              <div style={{ marginBottom: 22 }}>
+                <label style={labelStyle}>Campaign name</label>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer Sale Blast" style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Connection Mode</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <OptionCard active={mode === 'CLOUD_API'} icon={<IcCloud />} title="Cloud API" desc="Official Meta Business. Compliant, 100K+/day." onClick={() => setMode('CLOUD_API')} />
+                  <OptionCard active={mode === 'BAILEYS'} icon={<IcWifi />} title="WebSocket" desc="Any number. Zero cost, instant setup." onClick={() => setMode('BAILEYS')} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 1: Message source */}
+          {step === 1 && (
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 22, color: 'var(--text-primary)' }}>Message Source</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22 }}>
+                <OptionCard active={sourceType === 'template'} icon={<IcFile />} title="Use Template" desc="Pick a saved template with spin syntax" onClick={() => setSourceType('template')} />
+                <OptionCard active={sourceType === 'ai'} icon={<IcBrain />} title="AI Brief" desc="Describe your offer and let NEXUS write it" onClick={() => setSourceType('ai')} />
+              </div>
+
+              {sourceType === 'template' && (
+                <div>
+                  <label style={labelStyle}>Select Template</label>
+                  <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} style={{ ...inputStyle, fontFamily: 'inherit' }}>
+                    <option value="">— choose a template —</option>
+                    {(templates ?? []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                  {selectedTemplate && (
+                    <div style={{ marginTop: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                      <div style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Preview</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                        {spinText(selectedTemplate.body, { name: 'Demo', city: 'Karachi' })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {sourceType === 'ai' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div>
+                    <label style={labelStyle}>Describe your product / offer</label>
+                    <textarea value={aiBrief} onChange={(e) => setAiBrief(e.target.value)} rows={3} placeholder="e.g. 50% off our new skincare line for Eid..." style={{ ...inputStyle, height: 'auto', resize: 'vertical' as const }} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Target audience</label>
+                    <input value={aiAudience} onChange={(e) => setAiAudience(e.target.value)} placeholder="e.g. Women 25-40 in Karachi" style={inputStyle} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Tone</label>
+                      <select value={aiTone} onChange={(e) => setAiTone(e.target.value)} style={{ ...inputStyle, fontFamily: 'inherit' }}>
+                        {['Friendly', 'Professional', 'Urgent', 'Casual'].map((t) => <option key={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Count — {aiCount} messages</label>
+                      <input type="range" min={10} max={500} value={aiCount} onChange={(e) => setAiCount(Number(e.target.value))} style={{ width: '100%', marginTop: 10, accentColor: '#25d366' }} />
+                    </div>
+                  </div>
+                  <Button loading={aiGenerating} onClick={handleGenerateAI} disabled={!aiBrief}>Generate Messages</Button>
+                  {aiMessages.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 10 }}>
+                        Sample previews ({aiMessages.length} generated)
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {aiMessages.slice(0, 3).map((m, i) => (
+                          <div key={i} style={{ background: 'rgba(37,211,102,0.05)', border: '1px solid rgba(37,211,102,0.12)', borderRadius: 10, padding: '12px 14px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                            <div style={{ fontSize: 9, color: '#25d366', fontWeight: 600, letterSpacing: '1px', marginBottom: 6 }}>VARIANT {i + 1}</div>
+                            {m}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 2: Contacts */}
+          {step === 2 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>Select Contacts</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedContacts.length} selected · {contactsData?.total ?? 0} total</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                <Button size="sm" variant="outline" onClick={() => setSelectedContacts(contactList.filter((c) => c.valid).map((c) => c.id))}>
+                  Select All Valid (shown)
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelectedContacts([])}>Clear</Button>
+              </div>
+              {(contactsData?.total ?? 0) > contactList.length && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
+                  Showing first 200 of {contactsData?.total} contacts. To send to all, launch from the campaign detail page → "All Contacts" tab.
+                </div>
+              )}
+              <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10 }}>
+                {contactList.map((c) => (
+                  <label
+                    key={c.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedContacts.includes(c.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedContacts((prev) => [...prev, c.id]);
+                        else setSelectedContacts((prev) => prev.filter((id) => id !== c.id));
+                      }}
+                      style={{ accentColor: '#25d366' }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>{c.phone}</div>
+                      {c.name && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.name}</div>}
+                    </div>
+                    {!c.valid && <span style={{ fontSize: 10, color: '#ef4444', flexShrink: 0 }}>INVALID</span>}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Schedule */}
+          {step === 3 && (
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 22, color: 'var(--text-primary)' }}>Schedule</div>
+              <div style={{ background: 'rgba(37,211,102,0.05)', border: '1px solid rgba(37,211,102,0.12)', borderRadius: 10, padding: '12px 16px', marginBottom: 22, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                Messages only send within the active window (server timezone). Outside these hours messages queue and resume automatically.
+              </div>
+              <div style={{ display: 'flex', gap: 16 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>From hour (0–23)</label>
+                  <input type="number" min={0} max={23} value={activeFrom} onChange={(e) => setActiveFrom(Number(e.target.value))} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>To hour (0–23)</label>
+                  <input type="number" min={0} max={23} value={activeTo} onChange={(e) => setActiveTo(Number(e.target.value))} style={inputStyle} />
+                </div>
+              </div>
+              <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-muted)' }}>
+                Active window: <span style={{ color: '#25d366' }}>{activeFrom}:00 – {activeTo}:00</span>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Review */}
+          {step === 4 && (
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 22, color: 'var(--text-primary)' }}>Review & Launch</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {[
+                  { label: 'Campaign Name', value: name || '(unnamed)' },
+                  { label: 'Mode', value: mode === 'CLOUD_API' ? 'Cloud API' : 'WebSocket' },
+                  { label: 'Message Source', value: sourceType === 'template' ? (selectedTemplate?.name ?? 'None selected') : `AI Generated (${aiMessages.length} messages)` },
+                  { label: 'Contacts', value: `${selectedContacts.length} selected` },
+                  { label: 'Active Hours', value: `${activeFrom}:00 – ${activeTo}:00` },
+                  { label: 'Est. Duration', value: estimatedHours > 0 ? `~${estimatedHours}h ${estimatedMins}m` : `~${estimatedMins}m` },
+                ].map(({ label, value }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '13px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+              {selectedContacts.length === 0 && (
+                <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, padding: '10px 14px', marginTop: 16, fontSize: 12, color: '#f59e0b' }}>
+                  No contacts selected — campaign will be saved as draft
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Navigation */}
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <Button variant="outline" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>Back</Button>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {step < STEPS.length - 1 ? (
+              <Button
+                onClick={() => setStep((s) => s + 1)}
+                disabled={
+                  (step === 0 && !name) ||
+                  (step === 1 && sourceType === 'ai' && aiMessages.length === 0) ||
+                  (step === 1 && sourceType === 'template' && !templateId)
+                }
+              >Next</Button>
+            ) : (
+              <>
+                <Button variant="outline" loading={loading} onClick={() => handleLaunch(true)}>Save as Draft</Button>
+                <Button loading={loading} onClick={() => handleLaunch(false)} disabled={selectedContacts.length === 0}>Launch Now</Button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </DashLayout>
+  );
+}
+
+export default function NewCampaignPage() {
+  return (
+    <ToastProvider>
+      <NewCampaignContent />
+    </ToastProvider>
+  );
+}
